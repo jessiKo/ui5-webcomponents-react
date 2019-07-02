@@ -3,6 +3,8 @@ const puppeteer = require('puppeteer');
 const fileUrl = require('file-url');
 const path = require('path');
 const chalk = require('chalk');
+const prettier = require('prettier');
+const dedent = require('dedent');
 const generateTypingStatements = require('./generateTypingStatements');
 const generateComponentDemos = require('./generateComponentDemos');
 const showOptions = require('./showOptions');
@@ -33,19 +35,23 @@ async function generateWebComponentWrapper(dto) {
   const tsTypings = generateTypingStatements(dto.typings, dto.componentName);
   const indexPath = path.resolve(folderName, 'index.tsx');
 
-  const jsxContent = ''.concat(
-    tsTypings.importStatements,
-    `import ${ui5ComponentName} from '@ui5/webcomponents/dist/${componentName}';\n`,
-    "import { withWebComponent, WithWebComponentPropTypes } from '../../internal/withWebComponent';",
-    '\n\n',
-    tsTypings.interfaceStatement,
-    '\n\n',
-    `const ${componentName}: FC<${tsTypings.interfaceName}> = withWebComponent<${tsTypings.interfaceName}>(${ui5ComponentName});`,
-    '\n\n',
-    `${componentName}.displayName = '${componentName}';`,
-    '\n\n',
-    tsTypings.defaultPropsStatement,
-    `export { ${componentName} };\n`
+  let jsxContent = prettier.format(
+    dedent`
+    ${tsTypings.importStatements}
+    import ${ui5ComponentName} from '@ui5/webcomponents/dist/${componentName}';
+    import { withWebComponent, WithWebComponentPropTypes } from '../../internal/withWebComponent';
+    
+    ${tsTypings.interfaceStatement}
+    
+    const ${componentName}: FC<${tsTypings.interfaceName}> = withWebComponent<${tsTypings.interfaceName}>(${ui5ComponentName});
+    
+    ${componentName}.displayName = '${componentName}';
+    
+    ${tsTypings.defaultPropsStatement}
+    
+    export { ${componentName} };
+    `,
+    { printWidth: 120, parser: 'typescript', singleQuote: true, arrowParens: 'always' }
   );
 
   const libContent = `import { ${componentName} } from '../webComponents/${componentName}';
@@ -64,23 +70,12 @@ async function generateWebComponentWrapper(dto) {
   }
 }
 
-function executeQueue() {
-  const msg = queue.shift();
-
-  if (!msg) {
-    return;
-  }
-  try {
-    const dto = JSON.parse(msg.text());
+async function executeQueue() {
+  for await (const dto of queue) {
     if (!pattern || dto.componentName.indexOf(pattern) !== -1) {
-      generateWebComponentWrapper(dto).then(executeQueue);
+      await generateWebComponentWrapper(dto);
       generateComponentDemos(dto);
-    } else {
-      executeQueue();
     }
-  } catch (e) {
-    console.error(e.message);
-    executeQueue();
   }
 }
 
@@ -88,11 +83,15 @@ function executeQueue() {
   const browser = await puppeteer.launch(); //{devtools: true}
   const page = await browser.newPage();
   page.on('console', (msg) => {
-    // console.log(msg.text());
-    queue.push(msg);
+    try {
+      const dto = JSON.parse(msg.text());
+      queue.push(dto);
+    } catch (e) {
+      console.error('Failed to parse JSON', msg.text());
+    }
   });
   await page.goto(fileUrl('./scripts/wrapperGeneration/puppeteer.html'));
-  // await browser.waitForFunction('false');
-  await browser.close().then(executeQueue);
+  await browser.close();
+  await executeQueue();
   require('./generateWebComponentTests');
 })();
